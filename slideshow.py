@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Photo Slideshow Optimizer
-Solves the Photo Slideshow arrangement problem using Gurobi optimization.
-"""
-
 import sys
 import time
 import gurobipy as gp
@@ -13,7 +7,6 @@ from collections import defaultdict, Counter
 
 
 def parse_input(filename):
-    """Parse the input file and return the photo data."""
     with open(filename, 'r') as f:
         lines = f.readlines()
     
@@ -35,10 +28,6 @@ def parse_input(filename):
 
 
 def compute_interest_factor(tags1, tags2):
-    """
-    Compute the interest factor between two sets of tags.
-    Interest factor is min(common tags, tags in 1 but not in 2, tags in 2 but not in 1)
-    """
     common = len(tags1 & tags2)
     only_in_1 = len(tags1 - tags2)
     only_in_2 = len(tags2 - tags1)
@@ -46,11 +35,7 @@ def compute_interest_factor(tags1, tags2):
 
 
 def create_slides_from_photos(photos):
-    """
-    Create potential slides from photos.
-    - Each horizontal photo becomes its own slide
-    - Vertical photos need to be paired
-    """
+
     h_photos = [p for p in photos if p['orientation'] == 'H']
     v_photos = [p for p in photos if p['orientation'] == 'V']
     
@@ -67,13 +52,6 @@ def create_slides_from_photos(photos):
 
 
 def optimize_slideshow(h_slides, v_photos):
-    """
-    Use Gurobi to optimize the slideshow arrangement.
-    
-    For large datasets, this function uses a two-phase approach:
-    1. Match vertical photos into pairs using a greedy approach
-    2. Optimize the sequence of slides (horizontal and vertical pairs)
-    """
     # Phase 1: Create vertical photo pairs using a greedy approach
     # For larger instances, this is more efficient than trying to optimize pairing and sequencing together
     print(f"Creating pairs for {len(v_photos)} vertical photos...")
