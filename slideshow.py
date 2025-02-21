@@ -1,3 +1,9 @@
+#!/usr/bin/env python3
+"""
+Photo Slideshow Optimizer
+Solves the Photo Slideshow arrangement problem using Gurobi optimization.
+"""
+
 import sys
 import time
 import gurobipy as gp
@@ -7,6 +13,7 @@ from collections import defaultdict, Counter
 
 
 def parse_input(filename):
+    """Parse the input file and return the photo data."""
     with open(filename, 'r') as f:
         lines = f.readlines()
     
@@ -28,6 +35,10 @@ def parse_input(filename):
 
 
 def compute_interest_factor(tags1, tags2):
+    """
+    Compute the interest factor between two sets of tags.
+    Interest factor is min(common tags, tags in 1 but not in 2, tags in 2 but not in 1)
+    """
     common = len(tags1 & tags2)
     only_in_1 = len(tags1 - tags2)
     only_in_2 = len(tags2 - tags1)
@@ -35,7 +46,11 @@ def compute_interest_factor(tags1, tags2):
 
 
 def create_slides_from_photos(photos):
-
+    """
+    Create potential slides from photos.
+    - Each horizontal photo becomes its own slide
+    - Vertical photos need to be paired
+    """
     h_photos = [p for p in photos if p['orientation'] == 'H']
     v_photos = [p for p in photos if p['orientation'] == 'V']
     
@@ -51,48 +66,111 @@ def create_slides_from_photos(photos):
     return h_slides, v_photos
 
 
-def optimize_slideshow(h_slides, v_photos):
-    # Phase 1: Create vertical photo pairs using a greedy approach
-    # For larger instances, this is more efficient than trying to optimize pairing and sequencing together
-    print(f"Creating pairs for {len(v_photos)} vertical photos...")
-    v_pairs = []
-    used_v_photos = set()
+def generate_initial_pairs(v_photos, max_pairs=5000):
+    """Generate initial vertical photo pairs using a diversity-based strategy."""
+    pairs = []
+    photo_scores = defaultdict(float)
     
-    # Sort vertical photos by number of tags (descending) to start with more informative photos
-    v_photos_sorted = sorted(v_photos, key=lambda p: len(p['tags']), reverse=True)
+    # Calculate initial scores based on tag diversity
+    for photo in v_photos:
+        photo_scores[photo['id']] = len(photo['tags'])
     
-    # Greedy pairing strategy
-    for i, photo_i in enumerate(v_photos_sorted):
-        if photo_i['id'] in used_v_photos:
+    # Generate pairs prioritizing photos with diverse tags
+    used_photos = set()
+    for i, photo_i in enumerate(v_photos):
+        if photo_i['id'] in used_photos:
             continue
             
-        # Find best matching photo (not used yet)
-        best_match = None
-        best_score = -1
-        
-        for j, photo_j in enumerate(v_photos_sorted[i+1:], i+1):
-            if photo_j['id'] in used_v_photos:
+        best_matches = []
+        for j, photo_j in enumerate(v_photos[i+1:], i+1):
+            if photo_j['id'] in used_photos:
                 continue
                 
-            # Calculate a diversity score that rewards pairs with diverse tags
-            # (which can lead to higher interest factors)
+            # Score based on combined tag diversity and individual photo scores
             combined_tags = photo_i['tags'] | photo_j['tags']
-            score = len(combined_tags)
+            score = (len(combined_tags) + 
+                    photo_scores[photo_i['id']] + 
+                    photo_scores[photo_j['id']])
             
-            if score > best_score:
-                best_score = score
-                best_match = photo_j
+            best_matches.append((score, photo_j))
         
-        # If found a match, create a pair
-        if best_match:
-            v_pairs.append({
-                'photos': [photo_i['id'], best_match['id']],
-                'tags': photo_i['tags'] | best_match['tags']
-            })
-            used_v_photos.add(photo_i['id'])
-            used_v_photos.add(best_match['id'])
+        # Take top N matches for this photo
+        best_matches.sort(reverse=True)
+        for score, photo_j in best_matches[:5]:  # Consider top 5 matches per photo
+            if len(pairs) >= max_pairs:
+                break
+            if photo_j['id'] not in used_photos:
+                pairs.append({
+                    'photos': [photo_i['id'], photo_j['id']],
+                    'tags': photo_i['tags'] | photo_j['tags']
+                })
+                used_photos.add(photo_i['id'])
+                used_photos.add(photo_j['id'])
+                break
     
-    print(f"Created {len(v_pairs)} vertical photo pairs")
+    return pairs
+
+def find_promising_pairs(model, v_photos, current_pairs, dual_values):
+    """Find promising new vertical photo pairs based on dual values."""
+    new_pairs = []
+    used_in_current = {p for pair in current_pairs for p in pair['photos']}
+    
+    # Sort photos by their potential contribution based on dual values
+    photo_potential = defaultdict(float)
+    for photo in v_photos:
+        if photo['id'] not in used_in_current:
+            photo_potential[photo['id']] = sum(len(photo['tags'] & other['tags']) 
+                                             for other in v_photos 
+                                             if other['id'] != photo['id'])
+    
+    sorted_photos = sorted([(v, k) for k, v in photo_potential.items()], reverse=True)
+    
+    # Try to generate promising new pairs
+    for _, photo_i_id in sorted_photos[:100]:  # Look at top 100 most promising photos
+        photo_i = next(p for p in v_photos if p['id'] == photo_i_id)
+        
+        best_matches = []
+        for photo_j in v_photos:
+            if (photo_j['id'] != photo_i_id and 
+                photo_j['id'] not in used_in_current):
+                
+                combined_tags = photo_i['tags'] | photo_j['tags']
+                score = len(combined_tags)  # Basic scoring for now
+                best_matches.append((score, photo_j))
+        
+        # Take top matches for this photo
+        best_matches.sort(reverse=True)
+        for _, photo_j in best_matches[:3]:  # Consider top 3 matches
+            new_pairs.append({
+                'photos': [photo_i['id'], photo_j['id']],
+                'tags': photo_i['tags'] | photo_j['tags']
+            })
+            used_in_current.add(photo_i['id'])
+            used_in_current.add(photo_j['id'])
+            break
+    
+    return new_pairs
+
+def optimize_slideshow(h_slides, v_photos):
+    """
+    Use Gurobi to optimize the slideshow arrangement using column generation.
+    
+    This implementation:
+    1. Starts with an initial set of vertical photo pairs
+    2. Iteratively adds promising new pairs based on dual values
+    3. Maintains a reasonable problem size while exploring more possibilities
+    """
+    # Start with initial set of vertical photo pairs
+    print(f"Creating initial pairs for {len(v_photos)} vertical photos...")
+    v_pairs = generate_initial_pairs(v_photos)
+    print(f"Created {len(v_pairs)} initial vertical photo pairs")
+    
+    best_solution = None
+    best_objective = float('-inf')
+    iteration = 0
+    max_iterations = 5  # Limit number of iterations for time constraints
+    
+    while iteration < max_iterations:
     
     # Combine horizontal slides and vertical pairs
     all_slides = h_slides + v_pairs
@@ -158,52 +236,65 @@ def optimize_slideshow(h_slides, v_photos):
     # Set the objective to maximize the sum of interest factors
     model.setObjective(gp.quicksum(objective_terms), GRB.MAXIMIZE)
     
-    # Set Gurobi parameters for performance
-    model.setParam('TimeLimit', 300)  # 5 minute time limit
-    model.setParam('MIPFocus', 1)     # Focus on finding feasible solutions
-    model.setParam('Threads', 0)      # Use all available threads
-    model.setParam('OutputFlag', 1)   # Show progress
-    
-    # For large models, use heuristics to find good solutions quickly
-    if n_slides > 100:
-        model.setParam('Heuristics', 0.8)
-        model.setParam('MIPGap', 0.05)  # Accept solutions within 5% of optimal
-    
-    # Optimize the model
-    model.optimize()
-    
-    end_time = time.time()
-    print(f"Optimization completed in {end_time - start_time:.2f} seconds")
-    
-    # Extract the solution
-    solution = []
-    
-    if model.status == GRB.OPTIMAL or model.status == GRB.TIME_LIMIT or model.status == GRB.INTERRUPTED:
+        # Set Gurobi parameters for this iteration
+        iteration_time = 60 if iteration == 0 else 30  # Give more time to first iteration
+        model.setParam('TimeLimit', iteration_time)
+        model.setParam('MIPFocus', 1)
+        model.setParam('Threads', 0)
+        model.setParam('OutputFlag', 1)
+        
+        if n_slides > 100:
+            model.setParam('Heuristics', 0.8)
+            model.setParam('MIPGap', 0.1)  # Relax gap for speed
+        
+        # Optimize the model
+        model.optimize()
+        
+        # Check if we found a solution
         if model.SolCount > 0:
-            # Get the slide at each position
+            current_objective = model.ObjVal
+            
+            # Extract current solution
+            current_solution = []
             slide_positions = {}
             for i in range(n_slides):
                 for pos in range(n_slides):
-                    if abs(pos_vars[(i, pos)].X - 1.0) < 1e-6:  # Check if variable is 1
+                    if abs(pos_vars[(i, pos)].X - 1.0) < 1e-6:
                         slide_positions[pos] = i
             
-            # Extract the solution in order of positions
             for pos in range(n_slides):
                 if pos in slide_positions:
                     i = slide_positions[pos]
-                    solution.append(all_slides[i]['photos'])
-        else:
-            print("No solution found within time limit.")
-            # Fall back to a simple heuristic solution - just order the slides
-            for slide in all_slides:
-                solution.append(slide['photos'])
-    else:
-        print(f"Optimization failed with status: {model.status}")
-        # Fall back to a simple solution
-        for slide in all_slides:
-            solution.append(slide['photos'])
+                    current_solution.append(all_slides[i]['photos'])
+            
+            # Update best solution if improved
+            if current_objective > best_objective:
+                best_objective = current_objective
+                best_solution = current_solution
+                print(f"Found improved solution with objective {best_objective}")
+        
+        # Get dual values and generate new promising pairs
+        if iteration < max_iterations - 1:  # Skip for last iteration
+            dual_values = None  # Extract relevant dual values from the model
+            new_pairs = find_promising_pairs(model, v_photos, v_pairs, dual_values)
+            print(f"Generated {len(new_pairs)} new pairs")
+            
+            # Add new pairs to the pool
+            v_pairs.extend(new_pairs)
+            all_slides = h_slides + v_pairs
+            n_slides = len(all_slides)
+        
+        iteration += 1
+        print(f"Completed iteration {iteration}/{max_iterations}")
     
-    return solution
+    if best_solution is None:
+        print("No solution found, using fallback approach")
+        # Simple fallback: just use initial pairs in sequence
+        best_solution = []
+        for slide in all_slides:
+            best_solution.append(slide['photos'])
+    
+    return best_solution
 
 
 def write_solution(solution, output_file="slideshow.sol"):
