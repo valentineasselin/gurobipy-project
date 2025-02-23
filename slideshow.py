@@ -201,23 +201,23 @@ def optimize_slideshow(h_slides, v_photos):
         all_slides = h_slides + v_pairs
         n_slides = len(all_slides)
     
-        if n_slides == 0:
-            print("No slides created. Returning empty solution.")
-            return []
-        
-        # Phase 2: Optimize the sequence of slides
-        print(f"Optimizing sequence for {n_slides} slides...")
-        model = gp.Model("Photo_Slideshow")
-        
-        # Start timing
-        start_time = time.time()
-        
-        # Create variables for slide positions
-        pos_vars = {}
-        for i in range(n_slides):
-            for pos in range(n_slides):
-                pos_vars[(i, pos)] = model.addVar(vtype=GRB.BINARY, name=f"slide_{i}_pos_{pos}")
-        
+    if n_slides == 0:
+        print("No slides created. Returning empty solution.")
+        return []
+    
+    # Phase 2: Optimize the sequence of slides
+    print(f"Optimizing sequence for {n_slides} slides...")
+    model = gp.Model("Photo_Slideshow")
+    
+    # Start timing
+    start_time = time.time()
+    
+    # Create variables for slide positions
+    pos_vars = {}
+    for i in range(n_slides):
+        for pos in range(n_slides):
+            pos_vars[(i, pos)] = model.addVar(vtype=GRB.BINARY, name=f"slide_{i}_pos_{pos}")
+    
     # For larger models, compute interest factors on demand
     # instead of precomputing all of them
     interest_cache = {}
@@ -261,7 +261,7 @@ def optimize_slideshow(h_slides, v_photos):
     # Set the objective to maximize the sum of interest factors
     model.setObjective(gp.quicksum(objective_terms), GRB.MAXIMIZE)
     
-        # Set Gurobi parameters for this iteration
+    # Set Gurobi parameters for this iteration
     iteration_time = 60 if iteration == 0 else 30  # Give more time to first iteration
     model.setParam('TimeLimit', iteration_time)
     model.setParam('MIPFocus', 1)
@@ -271,7 +271,7 @@ def optimize_slideshow(h_slides, v_photos):
     if n_slides > 100:
         model.setParam('Heuristics', 0.8)
         model.setParam('MIPGap', 0.1)  # Relax gap for speed
-        
+    
     # Optimize the model
     model.optimize()
         
